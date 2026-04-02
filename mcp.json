@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "mcp-llm-gateway": {
+      "command": "mcp-llm-gateway",
+      "env": {}
+    }
+  }
+}
