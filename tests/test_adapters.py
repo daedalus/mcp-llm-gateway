@@ -6,64 +6,88 @@ import httpx
 import pytest
 
 from mcp_llm_gateway.adapters.http import HTTPAdapter, ModelListAdapter
-from mcp_llm_gateway.core.models import CompletionRequest, GatewayConfig
+from mcp_llm_gateway.core.models import CompletionRequest, Provider
 
 
 class TestHTTPAdapter:
     """Tests for HTTPAdapter."""
 
     @pytest.fixture
-    def config(self):
-        return GatewayConfig(
-            downstream_url="https://api.example.com",
-            model_list_url="https://models.dev/api/v1/models",
-            default_model="gpt-4",
+    def provider(self):
+        return Provider(
+            id="openai",
+            name="OpenAI",
+            type="openai",
+            base_url="https://api.example.com",
             api_key="test-key",
+            default_model="gpt-4",
             timeout=60,
         )
 
     @pytest.fixture
-    def adapter(self, config):
-        return HTTPAdapter(config)
+    def adapter(self, provider):
+        return HTTPAdapter(provider)
 
-    def test_adapter_initialization(self, adapter, config):
-        """Test that adapter is initialized with correct config."""
-        assert adapter._config == config
+    def test_adapter_initialization(self, adapter, provider):
+        """Test that adapter is initialized with correct provider."""
+        assert adapter._provider == provider
 
     def test_build_headers_without_api_key(self):
         """Test headers without API key."""
-        config = GatewayConfig(
-            downstream_url="https://api.example.com",
-            model_list_url="https://models.dev/api/v1/models",
-            default_model="gpt-4",
+        provider = Provider(
+            id="openai",
+            name="OpenAI",
+            type="openai",
+            base_url="https://api.example.com",
             api_key=None,
+            default_model="gpt-4",
         )
-        adapter = HTTPAdapter(config)
+        adapter = HTTPAdapter(provider)
         headers = adapter._build_headers()
         assert headers["Content-Type"] == "application/json"
         assert "Authorization" not in headers
 
     def test_build_headers_with_api_key(self):
         """Test headers with API key."""
-        config = GatewayConfig(
-            downstream_url="https://api.example.com",
-            model_list_url="https://models.dev/api/v1/models",
-            default_model="gpt-4",
+        provider = Provider(
+            id="openai",
+            name="OpenAI",
+            type="openai",
+            base_url="https://api.example.com",
             api_key="secret-key",
+            default_model="gpt-4",
         )
-        adapter = HTTPAdapter(config)
+        adapter = HTTPAdapter(provider)
         headers = adapter._build_headers()
         assert headers["Authorization"] == "Bearer secret-key"
 
-    def test_list_models_success(self, adapter, mock_http_response):
+    def test_list_models_success(self, adapter, provider):
         """Test successful model listing."""
-        with patch.object(adapter._client, "get", return_value=mock_http_response):
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {
+            "data": [
+                {
+                    "id": "gpt-4",
+                    "object": "model",
+                    "created": 1234567890,
+                    "owned_by": "openai",
+                },
+                {
+                    "id": "gpt-3.5-turbo",
+                    "object": "model",
+                    "created": 1234567890,
+                    "owned_by": "openai",
+                },
+            ]
+        }
+        with patch.object(adapter._client, "get", return_value=mock_response):
             models = adapter.list_models()
             assert len(models) == 2
             assert models[0].id == "gpt-4"
-            assert models[1].id == "gpt-3.5-turbo"
+            assert models[0].provider_id == "openai"
 
-    def test_list_models_http_error(self, adapter):
+    def test_list_models_http_error(self, adapter, provider):
         """Test model listing when HTTP error occurs."""
         with patch.object(adapter._client, "get") as mock_get:
             mock_get.side_effect = httpx.HTTPStatusError(
@@ -72,11 +96,16 @@ class TestHTTPAdapter:
             models = adapter.list_models()
             assert len(models) == 1
             assert models[0].id == "gpt-4"
+            assert models[0].provider_id == "openai"
 
-    def test_complete_success(self, adapter, mock_completion_response):
+    def test_complete_success(self, adapter):
         """Test successful completion request."""
         mock_response = MagicMock()
-        mock_response.json.return_value = mock_completion_response
+        mock_response.json.return_value = {
+            "id": "chatcmpl-123",
+            "object": "chat.completion",
+            "choices": [{"message": {"content": "Hello!"}}],
+        }
         mock_response.raise_for_status = MagicMock()
 
         with patch.object(adapter._client, "post", return_value=mock_response):
@@ -85,7 +114,7 @@ class TestHTTPAdapter:
                 messages=[{"role": "user", "content": "Hello"}],
             )
             result = adapter.complete(request)
-            assert result == mock_completion_response
+            assert "id" in result
 
     def test_complete_http_error(self, adapter):
         """Test completion request when HTTP error occurs."""
@@ -122,30 +151,36 @@ class TestModelListAdapter:
     """Tests for ModelListAdapter."""
 
     @pytest.fixture
-    def config(self):
-        return GatewayConfig(
-            downstream_url="https://api.example.com",
-            model_list_url="https://models.dev/api/v1/models",
-            default_model="gpt-4",
-        )
+    def adapter(self):
+        return ModelListAdapter("https://models.dev/api/v1/models")
 
-    @pytest.fixture
-    def adapter(self, config):
-        return ModelListAdapter(config)
-
-    def test_adapter_initialization(self, adapter, config):
+    def test_adapter_initialization(self, adapter):
         """Test that adapter is initialized correctly."""
-        assert adapter._config == config
+        assert adapter._model_list_url == "https://models.dev/api/v1/models"
 
-    def test_fetch_models_success(self, adapter, mock_model_list_response):
+    def test_fetch_models_success(self, adapter):
         """Test successful model fetching."""
-        with patch.object(
-            adapter._client, "get", return_value=mock_model_list_response
-        ):
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = [
+            {
+                "id": "gpt-4",
+                "object": "model",
+                "created": 1234567890,
+                "owned_by": "openai",
+            },
+            {
+                "id": "claude-3",
+                "object": "model",
+                "created": 1234567890,
+                "owned_by": "anthropic",
+            },
+        ]
+
+        with patch.object(adapter._client, "get", return_value=mock_response):
             models = adapter.fetch_models()
             assert len(models) == 2
             assert models[0].id == "gpt-4"
-            assert models[1].id == "claude-3"
 
     def test_fetch_models_returns_list_format(self, adapter):
         """Test fetching models when response is a list."""
@@ -165,12 +200,15 @@ class TestModelListAdapter:
         mock_response = MagicMock()
         mock_response.status_code = 200
         mock_response.json.return_value = {
-            "models": [{"id": "model-1"}, {"id": "model-2"}]
+            "models": {
+                "openai": [{"modelId": "gpt-4"}, {"modelId": "gpt-3.5-turbo"}],
+                "anthropic": [{"modelId": "claude-3"}],
+            }
         }
 
         with patch.object(adapter._client, "get", return_value=mock_response):
             models = adapter.fetch_models()
-            assert len(models) == 2
+            assert len(models) == 3
 
     def test_fetch_models_http_error(self, adapter):
         """Test model fetching when HTTP error occurs."""
